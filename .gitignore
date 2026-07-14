@@ -1,0 +1,11 @@
+# Dataset contents remain in their existing repository.
+# The large demonstration video is distributed separately.
+Documentations/*.mp4
+
+# Local tooling and generated caches.
+.DS_Store
+__pycache__/
+.pytest_cache/
+.ipynb_checkpoints/
+.venv/
+*.pyc
