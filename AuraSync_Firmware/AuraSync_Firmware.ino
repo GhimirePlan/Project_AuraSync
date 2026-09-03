@@ -243,3 +243,83 @@ void resetDecisionMemory() {
   spikeArmed = true;
 }
 
+// ----------------------------- I2S microphone ------------------------------
+bool configureMicrophone() {
+  i2s_chan_config_t channelConfig = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
+  channelConfig.dma_desc_num = 12;
+  channelConfig.dma_frame_num = I2S_READ_SAMPLES;
+  channelConfig.auto_clear_after_cb = true;
+
+  esp_err_t result = i2s_new_channel(&channelConfig, nullptr, &i2sRx);
+  if (result != ESP_OK) {
+    Serial.printf("I2S channel creation failed: %d\n", static_cast<int>(result));
+    return false;
+  }
+
+  i2s_std_config_t standardConfig = {};
+  standardConfig.clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(SAMPLE_RATE);
+  standardConfig.slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(
+    I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_MONO
+  );
+#if AURASYNC_MIC_USE_LEFT_CHANNEL
+  standardConfig.slot_cfg.slot_mask = I2S_STD_SLOT_LEFT;
+#else
+  standardConfig.slot_cfg.slot_mask = I2S_STD_SLOT_RIGHT;
+#endif
+  standardConfig.gpio_cfg.mclk = I2S_GPIO_UNUSED;
+  standardConfig.gpio_cfg.bclk = static_cast<gpio_num_t>(AURASYNC_I2S_BCLK_PIN);
+  standardConfig.gpio_cfg.ws = static_cast<gpio_num_t>(AURASYNC_I2S_WS_PIN);
+  standardConfig.gpio_cfg.dout = I2S_GPIO_UNUSED;
+  standardConfig.gpio_cfg.din = static_cast<gpio_num_t>(AURASYNC_I2S_DATA_PIN);
+  standardConfig.gpio_cfg.invert_flags.mclk_inv = false;
+  standardConfig.gpio_cfg.invert_flags.bclk_inv = false;
+  standardConfig.gpio_cfg.invert_flags.ws_inv = false;
+
+  result = i2s_channel_init_std_mode(i2sRx, &standardConfig);
+  if (result != ESP_OK) {
+    Serial.printf("I2S standard-mode initialization failed: %d\n", static_cast<int>(result));
+    i2s_del_channel(i2sRx);
+    i2sRx = nullptr;
+    return false;
+  }
+  result = i2s_channel_enable(i2sRx);
+  if (result != ESP_OK) {
+    Serial.printf("I2S enable failed: %d\n", static_cast<int>(result));
+    i2s_del_channel(i2sRx);
+    i2sRx = nullptr;
+    return false;
+  }
+  Serial.println("INMP441 I2S microphone initialized at 16 kHz mono.");
+  return true;
+}
+
+bool readAudioBlock() {
+  if (!microphoneReady || i2sRx == nullptr) return false;
+  int filled = 0;
+  while (filled < DSP_BLOCK_SAMPLES) {
+    size_t bytesRead = 0;
+    const esp_err_t result = i2s_channel_read(
+      i2sRx, i2sRaw, sizeof(i2sRaw), &bytesRead, pdMS_TO_TICKS(300)
+    );
+    if (result != ESP_OK || bytesRead == 0) {
+      ++i2sErrorCount;
+      return false;
+    }
+    const int samplesRead = bytesRead / sizeof(int32_t);
+    for (int i = 0; i < samplesRead && filled < DSP_BLOCK_SAMPLES; ++i) {
+      int32_t converted = i2sRaw[i] >> AURASYNC_MIC_SHIFT_BITS;
+      converted = static_cast<int32_t>(converted * AURASYNC_MIC_DIGITAL_GAIN);
+      const float input = static_cast<float>(clampInt16(converted));
+      const float cleaned = input - highPassLastX + HIGH_PASS_ALPHA * highPassLastY;
+      highPassLastX = input;
+      highPassLastY = cleaned;
+      const int16_t sample = clampInt16(static_cast<int32_t>(cleaned));
+      audioBlock[filled++] = sample;
+      cnnRing[cnnWriteIndex] = sample;
+      cnnWriteIndex = (cnnWriteIndex + 1) % CNN_WINDOW_SAMPLES;
+      if (cnnSamplesCollected < CNN_WINDOW_SAMPLES) ++cnnSamplesCollected;
+    }
+  }
+  return true;
+}
+
