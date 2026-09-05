@@ -323,3 +323,98 @@ bool readAudioBlock() {
   return true;
 }
 
+// ------------------------------ Fast DSP -----------------------------------
+DspResult computeDsp() {
+  DspResult result = {};
+  double unweightedEnergy = 0.0;
+  double aWeightedEnergy = 0.0;
+  int32_t peakAbsolute = 1;
+  int clipping = 0;
+  int zeros = 0;
+
+  for (int i = 0; i < DSP_BLOCK_SAMPLES; ++i) {
+    const int32_t sample = audioBlock[i];
+    const int32_t absolute = abs(sample);
+    if (absolute > peakAbsolute) peakAbsolute = absolute;
+    if (absolute > 32000) ++clipping;
+    if (absolute < 4) ++zeros;
+    const float normalized = sample / 32768.0f;
+    unweightedEnergy += normalized * normalized;
+    const float weighted = applyAWeighting(normalized);
+    aWeightedEnergy += weighted * weighted;
+  }
+
+  const float blockUnweightedPower = static_cast<float>(unweightedEnergy / DSP_BLOCK_SAMPLES);
+  const float blockWeightedPower = static_cast<float>(aWeightedEnergy / DSP_BLOCK_SAMPLES);
+  weightedEnergySum -= weightedEnergyRing[weightedEnergyIndex];
+  weightedEnergyRing[weightedEnergyIndex] = blockWeightedPower;
+  weightedEnergySum += blockWeightedPower;
+  weightedEnergyIndex = (weightedEnergyIndex + 1) % 10;
+  if (weightedEnergyCount < 10) ++weightedEnergyCount;
+
+  float localCalibration;
+  portENTER_CRITICAL(&snapshotMux);
+  localCalibration = calibrationOffsetDb;
+  portEXIT_CRITICAL(&snapshotMux);
+
+  const float oneSecondPower = weightedEnergySum / max(1, weightedEnergyCount);
+  result.aWeightedDbfs = powerToDb(oneSecondPower);
+  result.laeq1sDba = result.aWeightedDbfs + localCalibration;
+  result.rmsDb = powerToDb(blockUnweightedPower) + localCalibration;
+  result.peakDb = amplitudeToDb(peakAbsolute / 32768.0f) + localCalibration;
+  result.crestDb = result.peakDb - result.rmsDb;
+  result.clipPercent = 100.0f * clipping / DSP_BLOCK_SAMPLES;
+  result.zeroPercent = 100.0f * zeros / DSP_BLOCK_SAMPLES;
+
+  // 256-point fast spectral analysis for speech-band energy and spectral flux.
+  for (int i = 0; i < DSP_FFT_SIZE; ++i) {
+    const float window = 0.5f - 0.5f * cosf(2.0f * PI * i / (DSP_FFT_SIZE - 1));
+    dspFftReal[i] = (audioBlock[i] / 32768.0f) * window;
+    dspFftImag[i] = 0.0f;
+  }
+  fastFft(dspFftReal, dspFftImag, DSP_FFT_SIZE);
+  float totalPower = 1e-12f;
+  float speechPower = 0.0f;
+  float normalizedSpectrum[(DSP_FFT_SIZE / 2) + 1];
+  for (int k = 0; k <= DSP_FFT_SIZE / 2; ++k) {
+    const float power = dspFftReal[k] * dspFftReal[k] + dspFftImag[k] * dspFftImag[k];
+    normalizedSpectrum[k] = power;
+    totalPower += power;
+    const float frequency = k * (static_cast<float>(SAMPLE_RATE) / DSP_FFT_SIZE);
+    if (frequency >= 300.0f && frequency < 3400.0f) speechPower += power;
+  }
+  result.speechBandRatio = clampFloat(speechPower / totalPower, 0.0f, 1.0f);
+  float fluxSquared = 0.0f;
+  for (int k = 0; k <= DSP_FFT_SIZE / 2; ++k) {
+    const float normalized = normalizedSpectrum[k] / totalPower;
+    const float difference = normalized - dspPreviousSpectrum[k];
+    fluxSquared += difference * difference;
+    dspPreviousSpectrum[k] = normalized;
+  }
+  result.spectralFlux = sqrtf(fluxSquared);
+
+  result.micQuality = 100.0f;
+  if (result.zeroPercent > 80.0f) result.micQuality -= 65.0f;
+  if (result.clipPercent > 2.0f) result.micQuality -= 35.0f;
+  if (result.aWeightedDbfs < -80.0f) result.micQuality -= 45.0f;
+  result.micQuality = clampFloat(result.micQuality, 0.0f, 100.0f);
+
+  if (!baselineInitialized) {
+    adaptiveBaselineDba = result.laeq1sDba;
+    baselineInitialized = true;
+  } else if (result.laeq1sDba < adaptiveBaselineDba + 6.0f && result.crestDb < 16.0f) {
+    adaptiveBaselineDba = 0.998f * adaptiveBaselineDba + 0.002f * result.laeq1sDba;
+  }
+  result.baselineDba = adaptiveBaselineDba;
+  result.snrDb = max(0.0f, result.laeq1sDba - adaptiveBaselineDba);
+
+  const float crestComponent = clampFloat((result.crestDb - 6.0f) / 16.0f, 0.0f, 1.0f);
+  const float fluxComponent = clampFloat(result.spectralFlux / 0.35f, 0.0f, 1.0f);
+  const float peakComponent = clampFloat((result.peakDb - adaptiveBaselineDba - 10.0f) / 25.0f, 0.0f, 1.0f);
+  result.impulsiveness = clampFloat(
+    0.40f * crestComponent + 0.35f * fluxComponent + 0.25f * peakComponent,
+    0.0f, 1.0f
+  );
+  return result;
+}
+
