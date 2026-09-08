@@ -418,3 +418,80 @@ DspResult computeDsp() {
   return result;
 }
 
+// ------------------------ Trained DS-CNN pipeline --------------------------
+// This exactly follows the exported 16 kHz -> STFT -> Mel -> log -> clip-mean
+// -> per-Mel normalization contract used to train the INT8 model.
+void extractLogMel(const int16_t* audio,
+                   float features[AURASYNC_TIME_FRAMES][AURASYNC_N_MELS]) {
+  double clipSum = 0.0;
+  for (int frame = 0; frame < AURASYNC_TIME_FRAMES; ++frame) {
+    const int start = frame * AURASYNC_HOP_LENGTH;
+    for (int i = 0; i < CNN_FFT_SIZE; ++i) {
+      cnnFftReal[i] = (audio[start + i] / 32768.0f) * AURASYNC_HANN_WINDOW[i];
+      cnnFftImag[i] = 0.0f;
+    }
+    fastFft(cnnFftReal, cnnFftImag, CNN_FFT_SIZE);
+
+    for (int mel = 0; mel < AURASYNC_N_MELS; ++mel) {
+      double melPower = 0.0;
+      const int filterOffset = mel * ((CNN_FFT_SIZE / 2) + 1);
+      for (int bin = 0; bin <= CNN_FFT_SIZE / 2; ++bin) {
+        const float power = cnnFftReal[bin] * cnnFftReal[bin]
+                            + cnnFftImag[bin] * cnnFftImag[bin];
+        melPower += power * AURASYNC_MEL_FILTERBANK[filterOffset + bin];
+      }
+      const float value = logf(static_cast<float>(melPower) + AURASYNC_LOG_EPS);
+      features[frame][mel] = value;
+      clipSum += value;
+    }
+  }
+
+  const float clipMean = static_cast<float>(
+    clipSum / (AURASYNC_TIME_FRAMES * AURASYNC_N_MELS)
+  );
+  for (int frame = 0; frame < AURASYNC_TIME_FRAMES; ++frame) {
+    for (int mel = 0; mel < AURASYNC_N_MELS; ++mel) {
+      float value = features[frame][mel];
+      if (AURASYNC_APPLY_CLIP_MEAN_NORMALIZATION) value -= clipMean;
+      features[frame][mel] =
+        (value - AURASYNC_MEL_MEAN[mel]) / max(AURASYNC_MEL_STD[mel], 1e-6f);
+    }
+  }
+}
+
+void runTrainedCnn() {
+  if (!modelReady) return;
+  if (cnnSamplesCollected < CNN_WINDOW_SAMPLES) return;
+  for (int i = 0; i < CNN_WINDOW_SAMPLES; ++i) {
+    int source = cnnWriteIndex + i;
+    if (source >= CNN_WINDOW_SAMPLES) source -= CNN_WINDOW_SAMPLES;
+    cnnOrdered[i] = cnnRing[source];
+  }
+
+  const uint32_t started = micros();
+  extractLogMel(cnnOrdered, cnnLogMel);
+  AuraSyncPrediction newPrediction;
+  if (!AuraSyncModel::predict(cnnLogMel, newPrediction)) return;
+  currentInferenceMs = (micros() - started) / 1000.0f;
+
+  // Probability smoothing reduces rapid semantic flicker without affecting DSP spikes.
+  const float alpha = 0.40f;
+  currentPrediction.stationaryBackground =
+    (1.0f - alpha) * currentPrediction.stationaryBackground + alpha * newPrediction.stationaryBackground;
+  currentPrediction.speechDominant =
+    (1.0f - alpha) * currentPrediction.speechDominant + alpha * newPrediction.speechDominant;
+  currentPrediction.nonSpeechActivity =
+    (1.0f - alpha) * currentPrediction.nonSpeechActivity + alpha * newPrediction.nonSpeechActivity;
+
+  currentPrediction.classIndex = 0;
+  currentPrediction.confidence = currentPrediction.stationaryBackground;
+  if (currentPrediction.speechDominant > currentPrediction.confidence) {
+    currentPrediction.classIndex = 1;
+    currentPrediction.confidence = currentPrediction.speechDominant;
+  }
+  if (currentPrediction.nonSpeechActivity > currentPrediction.confidence) {
+    currentPrediction.classIndex = 2;
+    currentPrediction.confidence = currentPrediction.nonSpeechActivity;
+  }
+}
+
