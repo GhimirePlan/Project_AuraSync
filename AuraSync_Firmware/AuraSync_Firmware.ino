@@ -495,3 +495,110 @@ void runTrainedCnn() {
   }
 }
 
+// -------------------------- Fusion + state machine -------------------------
+void publishSnapshot(const DspResult& dsp, float score, bool micOk, bool simulation) {
+  TelemetrySnapshot updated;
+  portENTER_CRITICAL(&snapshotMux);
+  updated = snapshot;
+  portEXIT_CRITICAL(&snapshotMux);
+
+  ++updated.sequence;
+  updated.uptimeSeconds = millis() / 1000;
+  updated.state = displayState;
+  updated.score = score;
+  updated.persistence = persistenceValue;
+  updated.dsp = dsp;
+  updated.cnn = currentPrediction;
+  updated.cnnInferenceMs = currentInferenceMs;
+  updated.micOk = micOk;
+  updated.simulation = simulation;
+  updated.i2sErrors = i2sErrorCount;
+  updated.eventCount = eventCount;
+  updated.spikeCount = spikeCount;
+
+  portENTER_CRITICAL(&snapshotMux);
+  snapshot = updated;
+  portEXIT_CRITICAL(&snapshotMux);
+}
+
+void updateFusionAndState(const DspResult& dsp, bool micOk, bool simulation) {
+  const float loudness = clampFloat((dsp.laeq1sDba - 50.0f) / 30.0f, 0.0f, 1.0f);
+  const float speech = clampFloat(currentPrediction.speechDominant, 0.0f, 1.0f);
+  const float instantDisturbance = max(loudness, speech);
+  persistenceValue = 0.94f * persistenceValue + 0.06f * instantDisturbance;
+
+  const float score = 100.0f * clampFloat(
+    AURASYNC_WEIGHT_LOUDNESS * loudness
+    + AURASYNC_WEIGHT_SPEECH * speech
+    + AURASYNC_WEIGHT_PERSISTENCE * persistenceValue
+    + AURASYNC_WEIGHT_IMPULSIVENESS * dsp.impulsiveness,
+    0.0f, 1.0f
+  );
+
+  if (!micOk) micBadMs = min(3100, micBadMs+DSP_BLOCK_MS);
+  else micBadMs = max(0, micBadMs - DSP_BLOCK_MS);
+
+  const bool spikeCandidate =
+    dsp.peakDb >= AURASYNC_SPIKE_MIN_PEAK_DB
+    && dsp.crestDb >= AURASYNC_SPIKE_MIN_CREST_DB
+    && (dsp.peakDb - dsp.baselineDba) >= AURASYNC_SPIKE_ABOVE_BASELINE_DB;
+  const uint32_t now = millis();
+  if (spikeCandidate && spikeArmed) {
+    // One short pulse per physical impulse. A sustained/repeated high block cannot
+    // continuously extend the SPIKE display; it must clear before re-arming.
+    spikeVisibleUntilMs = now + AURASYNC_SPIKE_BLINK_MS;
+    spikeArmed = false;
+    spikeClearStartedMs = 0;
+    ++spikeCount;
+    ++eventCount;
+  } else if (!spikeCandidate && !spikeArmed) {
+    if (spikeClearStartedMs == 0) spikeClearStartedMs = now;
+    if (now - spikeClearStartedMs >= AURASYNC_SPIKE_REARM_MS) spikeArmed = true;
+  } else if (spikeCandidate) {
+    spikeClearStartedMs = 0;
+  }
+
+  const bool loudCandidate = (stableState == STATE_LOUD)
+    ? dsp.laeq1sDba >= AURASYNC_LOUD_EXIT_DBA
+    : dsp.laeq1sDba >= AURASYNC_LOUD_ENTER_DBA;
+  if (loudCandidate) loudMs = min(3300, loudMs + DSP_BLOCK_MS);
+  else loudMs = max(0, loudMs - DSP_BLOCK_MS);
+
+  if (score >= AURASYNC_WARNING_SCORE) warningMs = min(4500, warningMs + DSP_BLOCK_MS);
+  else warningMs = max(0, warningMs - DSP_BLOCK_MS);
+  if (score >= AURASYNC_PREWARNING_SCORE) preWarningMs = min(3000, preWarningMs + DSP_BLOCK_MS);
+  else preWarningMs = max(0, preWarningMs - DSP_BLOCK_MS);
+
+  const bool recovering = score < AURASYNC_PREWARNING_SCORE && !loudCandidate;
+  if (recovering) recoveryMs += DSP_BLOCK_MS;
+  else recoveryMs = 0;
+
+  const AuraState oldState = stableState;
+  if (micBadMs >= 2000) {
+    stableState = STATE_MIC_ERROR;
+  } else if (loudMs >= 2500) {
+    stableState = STATE_LOUD;
+  } else if (warningMs >= 3000) {
+    stableState = STATE_WARNING;
+  } else if (preWarningMs >= 1500) {
+    stableState = STATE_PRE_WARNING;
+  } else if (recovering &&
+             (stableState == STATE_LOUD || stableState == STATE_WARNING ||
+              stableState == STATE_PRE_WARNING || stableState == STATE_MIC_ERROR)) {
+    stableState = STATE_RECOVERY;
+  }
+  if (stableState == STATE_RECOVERY && recoveryMs >= 6000) stableState = STATE_SMOOTH;
+  if (stableState == STATE_MIC_ERROR && micOk && recoveryMs >= 2000) stableState = STATE_RECOVERY;
+
+  if (stableState != oldState) {
+    ++eventCount;
+    Serial.printf("State: %s -> %s | score %.1f | LAeq %.1f dBA\n",
+                  stateName(oldState), stateName(stableState), score, dsp.laeq1sDba);
+  }
+  const bool spikePulseActive =
+    static_cast<int32_t>(spikeVisibleUntilMs - now) > 0;
+  displayState = (spikePulseActive && stableState != STATE_MIC_ERROR)
+    ? STATE_SPIKE : stableState;
+  publishSnapshot(dsp, score, micOk, simulation);
+}
+
