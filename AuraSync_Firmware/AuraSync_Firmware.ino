@@ -602,3 +602,67 @@ void updateFusionAndState(const DspResult& dsp, bool micOk, bool simulation) {
   publishSnapshot(dsp, score, micOk, simulation);
 }
 
+// -------------------------- Labelled demonstration -------------------------
+void runSimulationStep() {
+  const float seconds = (millis() % 60000UL) / 1000.0f;
+  DspResult dsp = {};
+  dsp.micQuality = 100.0f;
+  dsp.zeroPercent = 0.2f;
+  dsp.clipPercent = 0.0f;
+  currentInferenceMs = 0.42f;
+
+  if (seconds < 12.0f) {
+    dsp.laeq1sDba = 48.0f + 1.2f * sinf(seconds);
+    dsp.peakDb = dsp.laeq1sDba + 7.0f;
+    dsp.speechBandRatio = 0.28f;
+    dsp.spectralFlux = 0.025f;
+    currentPrediction = {0.86f, 0.05f, 0.09f, 0.86f, 0};
+  } else if (seconds < 22.0f) {
+    dsp.laeq1sDba = 65.0f + 1.5f * sinf(seconds * 1.3f);
+    dsp.peakDb = dsp.laeq1sDba + 10.0f;
+    dsp.speechBandRatio = 0.66f;
+    dsp.spectralFlux = 0.08f;
+    currentPrediction = {0.07f, 0.86f, 0.07f, 0.86f, 1};
+  } else if (seconds < 37.0f) {
+    dsp.laeq1sDba = 72.0f + 1.0f * sinf(seconds * 1.7f);
+    dsp.peakDb = dsp.laeq1sDba + 11.0f;
+    dsp.speechBandRatio = 0.72f;
+    dsp.spectralFlux = 0.12f;
+    currentPrediction = {0.05f, 0.90f, 0.05f, 0.90f, 1};
+  } else if (seconds < 44.0f) {
+    dsp.laeq1sDba = 80.0f + 1.0f * sinf(seconds);
+    dsp.peakDb = 88.0f;
+    dsp.speechBandRatio = 0.43f;
+    dsp.spectralFlux = 0.18f;
+    currentPrediction = {0.03f, 0.25f, 0.72f, 0.72f, 2};
+  } else if (seconds < 45.0f) {
+    dsp.laeq1sDba = 74.0f;
+    dsp.peakDb = 98.0f;
+    dsp.speechBandRatio = 0.31f;
+    dsp.spectralFlux = 0.62f;
+    currentPrediction = {0.02f, 0.08f, 0.90f, 0.90f, 2};
+  } else if (seconds < 54.0f) {
+    dsp.laeq1sDba = 58.0f - (seconds - 45.0f) * 0.7f;
+    dsp.peakDb = dsp.laeq1sDba + 8.0f;
+    dsp.speechBandRatio = 0.35f;
+    dsp.spectralFlux = 0.045f;
+    currentPrediction = {0.70f, 0.12f, 0.18f, 0.70f, 0};
+  } else {
+    dsp.laeq1sDba = 48.0f;
+    dsp.peakDb = 55.0f;
+    dsp.speechBandRatio = 0.25f;
+    dsp.spectralFlux = 0.02f;
+    currentPrediction = {0.88f, 0.04f, 0.08f, 0.88f, 0};
+  }
+  dsp.aWeightedDbfs = dsp.laeq1sDba - calibrationOffsetDb;
+  dsp.rmsDb = dsp.laeq1sDba;
+  dsp.baselineDba = 48.0f;
+  dsp.snrDb = max(0.0f, dsp.laeq1sDba - dsp.baselineDba);
+  dsp.crestDb = dsp.peakDb - dsp.rmsDb;
+  dsp.impulsiveness = clampFloat(
+    0.45f * clampFloat((dsp.crestDb - 6.0f) / 16.0f, 0.0f, 1.0f)
+    + 0.55f * clampFloat(dsp.spectralFlux / 0.35f, 0.0f, 1.0f), 0.0f, 1.0f
+  );
+  updateFusionAndState(dsp, true, true);
+}
+
