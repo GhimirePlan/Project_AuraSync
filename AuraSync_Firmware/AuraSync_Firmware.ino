@@ -666,3 +666,43 @@ void runSimulationStep() {
   updateFusionAndState(dsp, true, true);
 }
 
+// ------------------------------- Audio task --------------------------------
+void audioTask(void* parameter) {
+  bool previousSimulation = !simulationMode;
+  uint8_t cnnBlockCounter = 0;
+  while (true) {
+    const bool simulate = simulationMode;
+    if (simulate != previousSimulation) {
+      resetSignalMemory();
+      resetDecisionMemory();
+      previousSimulation = simulate;
+      Serial.printf("Data source changed to: %s\n", simulate ? "labelled simulation" : "live microphone");
+    }
+
+    if (simulate) {
+      runSimulationStep();
+      vTaskDelay(pdMS_TO_TICKS(DSP_BLOCK_MS));
+      continue;
+    }
+
+    if (!microphoneReady || !readAudioBlock()) {
+      DspResult failed = {};
+      failed.laeq1sDba = 0.0f;
+      failed.baselineDba = adaptiveBaselineDba;
+      failed.micQuality = 0.0f;
+      updateFusionAndState(failed, false, false);
+      vTaskDelay(pdMS_TO_TICKS(DSP_BLOCK_MS));
+      continue;
+    }
+
+    DspResult dsp = computeDsp();
+    ++cnnBlockCounter;
+    if (cnnBlockCounter >= 10) {
+      cnnBlockCounter = 0;
+      runTrainedCnn();
+    }
+    const bool micOk = dsp.micQuality >= 35.0f;
+    updateFusionAndState(dsp, micOk, false);
+  }
+}
+
