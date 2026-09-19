@@ -706,3 +706,113 @@ void audioTask(void* parameter) {
   }
 }
 
+// ------------------------------ Web dashboard ------------------------------
+TelemetrySnapshot copySnapshot() {
+  TelemetrySnapshot copy;
+  portENTER_CRITICAL(&snapshotMux);
+  copy = snapshot;
+  portEXIT_CRITICAL(&snapshotMux);
+  return copy;
+}
+
+void sendJson(int status, const String& body) {
+  server.sendHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+  server.send(status, "application/json", body);
+}
+
+void handleDashboard() {
+  server.sendHeader("Cache-Control", "no-store");
+  server.send_P(200, "text/html", AURASYNC_DASHBOARD_HTML);
+}
+
+void handleStatus() {
+  const TelemetrySnapshot data = copySnapshot();
+  const char* networkMode = (WiFi.status() == WL_CONNECTED) ? "AP + Wi-Fi" : "Local AP";
+  const int rssi = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : 0;
+  char json[2400];
+  snprintf(json, sizeof(json),
+    "{"
+      "\"device_id\":\"%s\","
+      "\"firmware_version\":\"%s\","
+      "\"model_version\":\"%s\","
+      "\"sequence\":%lu,"
+      "\"uptime_s\":%lu,"
+      "\"data_source\":\"%s\","
+      "\"state\":\"%s\","
+      "\"score\":%.2f,"
+      "\"persistence\":%.3f,"
+      "\"dsp\":{" 
+        "\"laeq_1s_dba\":%.2f,"
+        "\"peak_db\":%.2f,"
+        "\"baseline_dba\":%.2f,"
+        "\"snr_db\":%.2f,"
+        "\"crest_db\":%.2f,"
+        "\"speech_band_ratio\":%.4f,"
+        "\"spectral_flux\":%.4f,"
+        "\"impulsiveness\":%.4f,"
+        "\"a_weighted_dbfs\":%.2f"
+      "},"
+      "\"cnn\":{" 
+        "\"stationary_background\":%.4f,"
+        "\"speech_dominant\":%.4f,"
+        "\"non_speech_activity\":%.4f,"
+        "\"predicted\":\"%s\","
+        "\"confidence\":%.4f,"
+        "\"inference_ms\":%.3f"
+      "},"
+      "\"health\":{" 
+        "\"mic_ok\":%s,"
+        "\"mic_quality\":%.1f,"
+        "\"clip_pct\":%.3f,"
+        "\"zero_pct\":%.3f,"
+        "\"i2s_errors\":%lu,"
+        "\"free_heap\":%lu"
+      "},"
+      "\"counters\":{" 
+        "\"events\":%lu,"
+        "\"spikes\":%lu"
+      "},"
+      "\"network\":{" 
+        "\"mode\":\"%s\","
+        "\"rssi\":%d,"
+        "\"ap_ip\":\"192.168.4.1\""
+      "}"
+    "}",
+    AURASYNC_DEVICE_ID,
+    AURASYNC_FIRMWARE_VERSION,
+    AURASYNC_MODEL_VERSION,
+    static_cast<unsigned long>(data.sequence),
+    static_cast<unsigned long>(data.uptimeSeconds),
+    data.simulation ? "simulation" : "microphone",
+    stateName(data.state),
+    data.score,
+    data.persistence,
+    data.dsp.laeq1sDba,
+    data.dsp.peakDb,
+    data.dsp.baselineDba,
+    data.dsp.snrDb,
+    data.dsp.crestDb,
+    data.dsp.speechBandRatio,
+    data.dsp.spectralFlux,
+    data.dsp.impulsiveness,
+    data.dsp.aWeightedDbfs,
+    data.cnn.stationaryBackground,
+    data.cnn.speechDominant,
+    data.cnn.nonSpeechActivity,
+    AuraSyncModel::className(data.cnn.classIndex),
+    data.cnn.confidence,
+    data.cnnInferenceMs,
+    data.micOk ? "true" : "false",
+    data.dsp.micQuality,
+    data.dsp.clipPercent,
+    data.dsp.zeroPercent,
+    static_cast<unsigned long>(data.i2sErrors),
+    static_cast<unsigned long>(ESP.getFreeHeap()),
+    static_cast<unsigned long>(data.eventCount),
+    static_cast<unsigned long>(data.spikeCount),
+    networkMode,
+    rssi
+  );
+  sendJson(200, json);
+}
+
