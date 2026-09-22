@@ -816,3 +816,46 @@ void handleStatus() {
   sendJson(200, json);
 }
 
+void handleDemoToggle() {
+#if AURASYNC_ALLOW_SIMULATION
+  simulationMode = !simulationMode;
+  const String message = simulationMode
+    ? "{\"ok\":true,\"message\":\"Labelled showcase simulation enabled.\"}"
+    : "{\"ok\":true,\"message\":\"Live microphone processing enabled.\"}";
+  sendJson(200, message);
+#else
+  sendJson(403, "{\"ok\":false,\"message\":\"Simulation is disabled in this build.\"}");
+#endif
+}
+
+void handleCalibration() {
+  if (simulationMode) {
+    sendJson(409, "{\"ok\":false,\"message\":\"Disable simulation before calibration.\"}");
+    return;
+  }
+  if (!server.hasArg("db")) {
+    sendJson(400, "{\"ok\":false,\"message\":\"Reference dBA value is required.\"}");
+    return;
+  }
+  const float knownDb = server.arg("db").toFloat();
+  if (knownDb < 30.0f || knownDb > 120.0f) {
+    sendJson(400, "{\"ok\":false,\"message\":\"Reference value must be 30–120 dBA.\"}");
+    return;
+  }
+  const TelemetrySnapshot data = copySnapshot();
+  if (!data.micOk || data.dsp.aWeightedDbfs < -100.0f) {
+    sendJson(409, "{\"ok\":false,\"message\":\"A stable microphone signal is required.\"}");
+    return;
+  }
+  const float newOffset = knownDb - data.dsp.aWeightedDbfs;
+  portENTER_CRITICAL(&snapshotMux);
+  calibrationOffsetDb = newOffset;
+  portEXIT_CRITICAL(&snapshotMux);
+  preferences.putFloat("calOffset", newOffset);
+  char response[220];
+  snprintf(response, sizeof(response),
+           "{\"ok\":true,\"message\":\"Calibration stored. New offset %.2f dB.\",\"cal_offset\":%.3f}",
+           newOffset, newOffset);
+  sendJson(200, response);
+}
+
