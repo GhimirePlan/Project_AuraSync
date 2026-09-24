@@ -859,3 +859,17 @@ void handleCalibration() {
   sendJson(200, response);
 }
 
+void configureWebServer() {
+  server.on("/", HTTP_GET, handleDashboard);
+  server.on("/api/status", HTTP_GET, handleStatus);
+  server.on("/api/demo/toggle", HTTP_POST, handleDemoToggle);
+  server.on("/api/calibrate", HTTP_POST, handleCalibration);
+  server.on("/api/health", HTTP_GET, []() {
+    sendJson(200, "{\"ok\":true,\"service\":\"aurasync-edge-dashboard\"}");
+  });
+  server.onNotFound([]() {
+    sendJson(404, "{\"ok\":false,\"message\":\"Endpoint not found.\"}");
+  });
+  server.begin();
+}
+
