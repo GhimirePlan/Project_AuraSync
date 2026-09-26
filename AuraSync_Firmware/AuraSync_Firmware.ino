@@ -873,3 +873,34 @@ void configureWebServer() {
   server.begin();
 }
 
+// ----------------------------- Network setup -------------------------------
+void configureNetwork() {
+  WiFi.mode(WIFI_AP_STA);
+  const bool apStarted = WiFi.softAP(AURASYNC_AP_SSID, AURASYNC_AP_PASSWORD);
+  Serial.printf("Showcase access point: %s (%s)\n", AURASYNC_AP_SSID, apStarted ? "started" : "failed");
+  Serial.print("Local dashboard: http://");
+  Serial.println(WiFi.softAPIP());
+
+  if (strlen(AURASYNC_WIFI_SSID) > 0) {
+    WiFi.begin(AURASYNC_WIFI_SSID, AURASYNC_WIFI_PASSWORD);
+    Serial.printf("Connecting to Wi-Fi: %s", AURASYNC_WIFI_SSID);
+    const uint32_t deadline = millis() + 12000;
+    while (WiFi.status() != WL_CONNECTED && millis() < deadline) {
+      delay(250);
+      Serial.print('.');
+    }
+    Serial.println();
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.print("Network dashboard: http://");
+      Serial.println(WiFi.localIP());
+    } else {
+      Serial.println("Wi-Fi not connected; local access-point dashboard remains available.");
+    }
+  }
+
+  if (MDNS.begin("aurasync")) {
+    MDNS.addService("http", "tcp", 80);
+    Serial.println("mDNS dashboard: http://aurasync.local");
+  }
+}
+
