@@ -904,3 +904,70 @@ void configureNetwork() {
   }
 }
 
+// ------------------------------ Arduino entry ------------------------------
+void setup() {
+  Serial.begin(115200);
+  delay(700);
+  Serial.println();
+  Serial.println("====================================================");
+  Serial.printf("AuraSync %s | model %s\n", AURASYNC_FIRMWARE_VERSION, AURASYNC_MODEL_VERSION);
+  Serial.println("DSP + trained three-class INT8 DS-CNN + fusion + state machine");
+  Serial.println("====================================================");
+
+  preferences.begin("aurasync", false);
+  calibrationOffsetDb = preferences.getFloat("calOffset", AURASYNC_DEFAULT_CAL_OFFSET_DB);
+  Serial.printf("Calibration offset: %.2f dB\n", calibrationOffsetDb);
+
+  resetSignalMemory();
+  resetDecisionMemory();
+  modelReady = AuraSyncModel::begin();
+  if (!modelReady) {
+    Serial.println("WARNING: CNN unavailable; DSP and dashboard will continue without model updates.");
+  }
+  microphoneReady = configureMicrophone();
+#if AURASYNC_AUTO_SIMULATE_IF_MIC_FAILS
+  simulationMode = !microphoneReady;
+#else
+  simulationMode = false;
+#endif
+  if (!microphoneReady) {
+    Serial.printf("Microphone unavailable. %s\n",
+                  simulationMode ? "Starting visibly labelled simulation." : "MIC_ERROR will be reported.");
+  }
+
+  configureNetwork();
+  configureWebServer();
+
+  snapshot.cnn = currentPrediction;
+  snapshot.state = microphoneReady ? STATE_SMOOTH : STATE_MIC_ERROR;
+  snapshot.micOk = microphoneReady;
+  snapshot.simulation = simulationMode;
+
+  const BaseType_t taskCreated = xTaskCreatePinnedToCore(
+    audioTask,
+    "AuraSyncAudio",
+    24576,
+    nullptr,
+    3,
+    &audioTaskHandle,
+    1
+  );
+  if (taskCreated != pdPASS) {
+    Serial.println("CRITICAL: Audio task creation failed.");
+    snapshot.state = STATE_MIC_ERROR;
+    snapshot.micOk = false;
+  }
+}
+
+void loop() {
+  server.handleClient();
+
+  static uint32_t lastReconnectAttempt = 0;
+  if (strlen(AURASYNC_WIFI_SSID) > 0 && WiFi.status() != WL_CONNECTED
+      && millis() - lastReconnectAttempt > 30000UL) {
+    lastReconnectAttempt = millis();
+    WiFi.disconnect();
+    WiFi.begin(AURASYNC_WIFI_SSID, AURASYNC_WIFI_PASSWORD);
+  }
+  delay(2);
+}
