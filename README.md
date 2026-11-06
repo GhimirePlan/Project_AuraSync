@@ -11,6 +11,8 @@ Institute of Engineering · Thapathali Campus · Tribhuvan University
 
 [Project video / materials](https://drive.google.com/file/d/1x4ovi2Fx1pws_6r4OncqcAh-ii-xkip1/view?usp=sharing) · [How it works](#system-architecture) · [Results](#model-evaluation) · [Getting started](#getting-started)
 
+<img src="Documentations/AuraSync_Prototype.png" alt="AuraSync integrated prototype with its display and LED ring" width="550">
+
 </div>
 
 ---
