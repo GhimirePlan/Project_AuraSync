@@ -213,7 +213,9 @@ Developed as a **sixth-semester minor project** in the **Department of Electroni
 - Samman Ghale
 
 **Project supervisor:** Er. Binod Sapkota  
-**Academic report:** July 2026
+**Academic report:** [July 2026 project report](Documentations/Prioject_Report.pdf)
+
+**Defense presentation:** [Final defense slides](Documentations/AuraSync_Final_Defense.pdf)
 
 ### Project media
 
