@@ -197,10 +197,6 @@ cd Project_AuraSync
 
 ## Project scope and limitations
 
-The **July 2026 academic progress report** documents working implementations of I²S capture, DSP diagnostics, INT8 DS-CNN inference, hybrid fusion, state timing, stored calibration settings, simulation controls, and the local HTTP dashboard.
-
-It also identifies **complete physical-display/enclosure integration, controlled reference-meter calibration, field validation, and MQTT/remote analytics** as additional work or extensions. These are not presented as completed capabilities solely on the basis of that report.
-
 AuraSync is an **academic acoustic-comfort prototype**, not a certified sound-level meter or a surveillance product.
 
 ## Academic project
